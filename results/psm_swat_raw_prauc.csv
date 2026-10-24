@@ -1,0 +1,3 @@
+dataset,anomaly_ratio,channels,PWTA,PCA,IsolationForest,1-NN,LOF
+PSM,0.2776,25,0.5557,0.5427,0.4304,0.5421,0.4928
+SWaT,0.1214,51,0.1982,0.2342,0.7414,0.2349,0.0821

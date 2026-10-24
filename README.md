@@ -1,16 +1,61 @@
-# PWTA: Patch-Window Transformer Autoencoder for Multivariate Time-Series Anomaly Detection
+# PWTA: Patch-wise Transformer Autoencoder for Raw Point-level Time-Series Anomaly Detection
 
-Code for my undergraduate thesis (Financial Engineering Lab, Hankuk University of Foreign Studies, advisor: Prof. Hyeongwoo Kong).
+Code and results for my undergraduate thesis (Financial Engineering Lab, Hankuk University of Foreign Studies, advisor: Prof. Hyeongwoo Kong).
 
-PWTA is a small reconstruction model (about 0.15M parameters) for multivariate time-series anomaly detection.
-I tried 37+ architecture and hyperparameter settings and the accuracy hardly changed.
-What did change the results was on the data side: how channel errors are combined, how the input is scaled, and which metric is used.
+📄 **Thesis (PDF):** [thesis/PWTA_thesis.pdf](thesis/PWTA_thesis.pdf)
 
-## Results
+Many recent time-series anomaly detectors report F1 above 0.9 on standard benchmarks, but most of these numbers use **point adjustment**: if any single point inside an anomaly segment is flagged, the whole segment counts as detected. I re-evaluated detectors with **raw point-level PR-AUC** instead, and compared them with PWTA, a small (≈0.15M parameter) patch-wise Transformer autoencoder.
 
-### 1. Weighting channels by kurtosis
+The main contribution is the evaluation, not the architecture: once point adjustment is removed, the ranking of methods changes a lot.
+
+## Main findings
+
+### 1. Point-adjusted F1 can come from random scores
+
+Anomaly Transformer, run with its official code and settings, reproduces its published point-adjusted F1. Under raw PR-AUC the same scores are at the random baseline.
+
+| Dataset | Published F1 (PA) | Reproduced F1 (PA) | Raw PR-AUC | ÷ random |
+|---|---:|---:|---:|---:|
+| MSL | 0.916 | 0.935 | 0.105 | 1.00× |
+| SMAP | 0.967 | 0.965 | 0.129 | 1.01× |
+
+On SWaT, both Anomaly Transformer and DCdetector output exactly zero for most time points (86.5% and 97.9%). The zeros are slightly *more* common inside anomalies than outside, and the non-zero scores have ROC-AUC 0.52 and 0.51. Point-adjusted F1 is still 0.949 and 0.964.
+
+Across 24 DCdetector runs (SMD machines, MSL, SWaT, NIPS-TS-Swan, several seeds), raw PR-AUC never moved more than 4% away from random (ROC-AUC 0.445–0.506), while point-adjusted F1 reached 0.977.
+
+<p align="center">
+  <img src="assets/point_adjusted_f1_vs_raw_prauc.png" alt="Point-adjusted F1 against raw PR-AUC divided by the anomaly ratio" width="640" />
+</p>
+
+### 2. Under raw PR-AUC, a simple reconstruction model ranks first
+
+Same metric, 110 entities (SMD 28, SMAP 55, MSL 27), fixed hyperparameters for every dataset:
+
+<p align="center">
+  <img src="assets/pwta_vs_classical_110_entities.png" alt="Mean raw PR-AUC and first-place counts over 110 entities" width="760" />
+</p>
+
+| | SMD | SMAP | MSL |
+|---|---:|---:|---:|
+| PWTA mean raw PR-AUC | 0.482 | 0.423 | 0.392 |
+| Entities where PWTA ranks first | 14 / 28 | 25 / 55 | 12 / 27 |
+| PWTA ÷ Anomaly Transformer (raw PR-AUC) | 10.8× | 2.7× | 3.3× |
+
+PWTA is also best on PSM (0.556 vs. ≤0.543 for the classical baselines).<sup>1</sup>
+
+### 3. Where it does not work, and why
+
+On **SWaT**, Isolation Forest is far better (0.741 vs. 0.198). Across 327 anomaly segments in SMD, whether PWTA catches a segment depends on how far it deviates from normal (r = +0.469, p = 2.5e-19), not on how long it lasts (r = −0.062, p = 0.26). Many SWaT attacks stay inside the normal value range, which suits an isolation-based detector better than reconstruction error. PWTA still beats a learning-free magnitude baseline on SMD, so it is not just a magnitude detector.
+
+<sub><sup>1</sup> The SMAP entity list used here contains entity `P-2` twice. Counting it once gives 109 entities, a mean of 0.428 and 50 first places; the conclusions do not change.</sub>
+
+## Follow-up experiments in this repository
+
+The code here also includes experiments run after the thesis on how the scores are built.
+
+### Weighting channels by kurtosis
 An anomaly usually affects only a few channels, so taking the mean of the reconstruction error over all channels makes it weaker.
-I weight each channel by the kurtosis of its error, which gives more weight to channels that are usually quiet and then suddenly spike.
+Weighting each channel by the kurtosis of its error gives more weight to channels that are usually quiet and then suddenly spike.
 
 | Scoring (same PWTA model) | Macro PR-AUC (SMD, SMAP, MSL) |
 |---|---|
@@ -19,17 +64,13 @@ I weight each channel by the kurtosis of its error, which gives more weight to c
 
 This only works when anomalies are rare. On PSM, where 28% of the points are anomalies, it doesn't help.
 
-### 2. No re-normalization
+### No re-normalization
 On SMAP and MSL, 42% and 77% of the channels are almost constant.
 z-score normalization divides these channels by a standard deviation close to 0, which blows up tiny changes (up to about 10^8) and hides the real signal.
 On MSL, PR-AUC was 0.526 with the raw data and 0.393 after normalization.
-I also kept the constant channels, because many MSL anomalies are a jump in one of them.
+The constant channels are kept, because many MSL anomalies are a jump in one of them.
 
-### 3. No point adjustment
-Point-adjusted F1 counts a whole anomaly segment as detected if one point in it is flagged, so even random scores get 0.83 (Kim et al., AAAI 2022).
-All results here use raw PR-AUC, and I only counted an improvement if it held on every seed.
-
-### 4. Model size and speed
+### Model size and speed
 Batch size 128, forward + backward:
 
 | Model | Parameters | Step time | Peak memory |
@@ -38,16 +79,8 @@ Batch size 128, forward + backward:
 | Anomaly Transformer | 4.83M | 23.2 ms | 1.95 GB |
 | DCdetector | 0.90M | 104.4 ms | 9.63 GB |
 
-## Files
-
-| File | Description |
-|---|---|
-| `pwta.py` | PWTA model, training, kurtosis-weighted scoring, raw PR-AUC, and optional routing to a channel-attention variant (`HybridPWTA`) |
-| `patch_light.py` | Faster training and evaluation for the same model, plus a segment-level recall metric |
-| `notebooks/patch_light_demo.ipynb` | Runs `patch_light.py` on three SMD machines |
-
 ### patch_light.py
-The model, scoring and metric are the same as before. I only changed how training and evaluation run:
+The model, scoring and metric are the same. Only training and evaluation changed:
 
 1. Evaluation in batches. Before, the whole test set went to the GPU at once and long series ran out of memory. Peak memory on SWaT went from 2.88 GB to 0.04 GB and the outputs are identical.
 2. Training data kept on the GPU, so it isn't copied every batch. About 2x faster.
@@ -63,6 +96,19 @@ Segment recall before and after (`CFG_LOSSLESS`):
 | SWaT | 1 | 0.105 | 0.105 | 0.000 |
 
 Retraining all 112 entities with 3 seeds takes 7.6 minutes, with 1.02 GB peak GPU memory.
+
+## Files
+
+| Path | Description |
+|---|---|
+| `thesis/PWTA_thesis.pdf` | Full thesis |
+| `pwta.py` | PWTA model, training, kurtosis-weighted scoring, raw PR-AUC, and optional routing to a channel-attention variant (`HybridPWTA`) |
+| `patch_light.py` | Faster training and evaluation for the same model, plus a segment-level recall metric |
+| `notebooks/patch_light_demo.ipynb` | Runs `patch_light.py` on three SMD machines |
+| `results/per_entity_raw_prauc.csv` | Raw PR-AUC of PWTA and four classical baselines for each of the 110 entities |
+| `results/psm_swat_raw_prauc.csv` | Same comparison on PSM and SWaT |
+| `results/attention_detectors_raw_vs_point_adjusted.csv` | Anomaly Transformer and DCdetector: raw PR-AUC, ROC-AUC, raw F1, point-adjusted F1, share of zero scores |
+| `results/swat_score_degeneracy.csv` | Zero-score diagnostics for both models on SWaT |
 
 ## Usage
 
@@ -88,6 +134,7 @@ print(pr_auc(score, lb))
 `python pwta.py` trains on every SMD machine and compares kurtosis weighting with the plain mean.
 
 ## Notes
-- Kurtosis weighting and the routing rule use statistics of the test inputs (not the labels), so the setting is transductive.
+- Thesis results use a fixed seed (0); seed stability (0/1/2) was checked for the reproduced attention-based detectors.
+- Kurtosis weighting and the routing rule use statistics of the test inputs (not the labels), so that setting is transductive.
 - Scores only cover time points inside full windows, so up to 9 points at the end of each test series are left out. This is the same for every method.
 - The kurtosis-weighted fusion is studied further in a manuscript in preparation: S. Park\*, M. Woo\*, and H. Kong, Adaptive Kurtosis-Weighted Channel Fusion for Multivariate Time-Series Anomaly Detection (\*equal contribution).
